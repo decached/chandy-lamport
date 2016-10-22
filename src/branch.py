@@ -13,40 +13,66 @@ import glob
 import os
 import socket
 import sys
+import threading
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + '/lib/gen-py')
 sys.path.insert(0, glob.glob('/home/akash/clones/thrift/lib/py/build/lib.*')[0])
 
 from bank import Branch
 from bank.ttypes import BranchID, TransferMessage, LocalSnapshot, SystemException
+from controller import Controller
 
 from thrift import Thrift
 from thrift.transport import TSocket, TTransport
 from thrift.protocol import TBinaryProtocol
 from thrift.server import TServer
 
+balance = None
+lock = threading.Lock()
 
-class BankHandler():
+
+def setBalance(amount, op="new"):
+    with lock:
+        if op == "new":
+            balance = amount
+        elif op == "inc":
+            balance += amount
+        elif op == "dec":
+            balance -= amount
+
+
+def getBalance():
+    with lock:
+        return balance
+
+
+class BankHandler:
 
     def __init__(self):
-        self.balance = None
-        self.branches = []
+        self.branchIds = []
+        self.messageId = 0
 
     def initBranch(self, balance, all_branches):
-        self.balance = balance
-        self.branches = all_branches
+        setBalance(balance, op="new")
+        self.branchIds = all_branches
 
-    def transferMoney(self, message, messageId):
-        pass
+    def transferMoney(self, transferMessage, messageId):
+        setBalance(transferMessage.amount, op="dec")
 
     def initSnapshot(self, snapshotId):
-        pass
+        for branchId in self.branchIds:
+            branchCtrl = Controller(branchId.ip, branchId.port)
+            branchCtrl.client.Marker(branchId, snapshotId, self.nextMessageId())
 
     def Marker(self, branchId, snapshotId, messageId):
-        pass
+        print branchId, snapshotId, messageId
 
     def retrieveSnapshot(self, snapshotId):
         pass
+
+    def nextMessageId(self):
+        self.messageId = self.messageId + 1
+        return self.messageId
 
 
 if __name__ == '__main__':
