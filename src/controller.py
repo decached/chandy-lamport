@@ -68,3 +68,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
     branchIds, branchCtrls = getBranches(args.filename)
     initBranches(args.balance, branchCtrls, branchIds)
+    snapshotId = 0
+    while True:
+        time.sleep(3)
+        randomBranch = branchCtrls[random.randint(0, len(branchCtrls) - 1)]
+        snapshotId += 1
+        randomBranch.client.initSnapshot(snapshotId)
