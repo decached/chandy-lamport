@@ -11,7 +11,9 @@
 import argparse
 import glob
 import os
+import random
 import sys
+import time
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + '/lib/gen-py')
 sys.path.insert(0, glob.glob('/home/akash/clones/thrift/lib/py/build/lib.*')[0])
@@ -23,7 +25,6 @@ from thrift.Thrift import TType
 from thrift.transport import TSocket
 from thrift.transport import TTransport
 from thrift.protocol import TBinaryProtocol
-from thrift.protocol import TJSONProtocol
 
 
 class Controller:
@@ -36,39 +37,27 @@ class Controller:
     def deinit(self):
         self.transport.close()
 
-    def initBranch(self, balance, branches):
-        self.client.initBranch(balance, branches)
-
-    def initSnapshot(self, snapshotId):
-        pass
-
-    def Marker(self, branchId, snapshotId, messageId):
-        pass
-
-    def retrieveSnapshot(self, snapshotId):
-        pass
-
 
 def readBranchDetails(filename):
-    branches = []
+    branchIds = []
     with open(filename) as f:
         for line in f.readlines():
             name, ip, port = line.split()
-            branches.append(BranchID(name, ip, int(port)))
-    return branches
+            branchIds.append(BranchID(name, ip, int(port)))
+    return branchIds
 
 
-def getBranches(branches, filename):
-    branches = readBranchDetails(args.filename)
+def getBranches(filename):
+    branchIds = readBranchDetails(args.filename)
     branchCtrls = []
-    for branch in branches:
-        branchCtrls.append(Controller(branch.ip, branch.port))
-    return branchCtrls
+    for branchId in branchIds:
+        branchCtrls.append(Controller(branchId.ip, branchId.port))
+    return branchIds, branchCtrls
 
 
-def initBranches(branches, balance):
-    for branch in branches:
-        branch.initBranch(balance, branches)
+def initBranches(balance, branchCtrls, branchIds):
+    for branch in branchCtrls:
+        branch.client.initBranch(balance, branchIds)
 
 
 if __name__ == '__main__':
@@ -77,5 +66,5 @@ if __name__ == '__main__':
     parser.add_argument(dest='filename', help='Branch Details')
 
     args = parser.parse_args()
-    branches = getBranches(args.filename)
-    initBranches(branches, args.balance)
+    branchIds, branchCtrls = getBranches(args.filename)
+    initBranches(args.balance, branchCtrls, branchIds)
