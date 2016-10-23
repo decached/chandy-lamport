@@ -11,58 +11,76 @@
 import argparse
 import glob
 import os
+import random
 import socket
 import sys
 import threading
+import time
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + '/lib/gen-py')
 sys.path.insert(0, glob.glob('/home/akash/clones/thrift/lib/py/build/lib.*')[0])
 
+from thrift.transport import TSocket
+from thrift.protocol import TBinaryProtocol
 from bank import Branch
 from bank.ttypes import BranchID, TransferMessage, LocalSnapshot, SystemException
-from controller import Controller
+import connection
 
 from thrift import Thrift
 from thrift.transport import TSocket, TTransport
 from thrift.protocol import TBinaryProtocol
 from thrift.server import TServer
 
+branchId = None
 balance = None
-lock = threading.Lock()
+branchIds = []
+branchCons = []
+messageId = 0
 
 
-def setBalance(amount, op="new"):
-    with lock:
-        if op == "new":
-            balance = amount
-        elif op == "inc":
-            balance += amount
-        elif op == "dec":
-            balance -= amount
+class Balance:
+    def __init__(self, value):
+        self.value = value
+        self.__lock = threading.Lock()
+
+    def decrement(self, percent):
+        with self.__lock:
+            amount = 1
+            # amount = self.value * percent / 100
+            self.value -= amount
+            return amount
+
+    def increment(self, amount):
+        with self.__lock:
+            self.value += amount
 
 
-def getBalance():
-    with lock:
-        return balance
+def transactioner():
+    global branchId, branchCons
+
+    while True:
+        time.sleep(random.randint(1, 5))
+        amount = balance.decrement(random.randint(1, 5))
+        randomBranchCon = branchCons[random.randint(0, len(branchCons) - 1)]
+        randomBranchCon.client.transferMoney(TransferMessage(branchId, amount), messageId)
 
 
 class BankHandler:
-
-    def __init__(self):
-        self.branchIds = []
-        self.messageId = 0
-
-    def initBranch(self, balance, all_branches):
-        setBalance(balance, op="new")
-        self.branchIds = all_branches
+    def initBranch(self, initBalance, allBranches):
+        global balance, branchIds, branchCons
+        balance = Balance(initBalance)
+        branchIds = allBranches
+        branchCons = connection.getBranchCons(branchIds)
+        threading.Thread(target=transactioner).start()
 
     def transferMoney(self, transferMessage, messageId):
-        setBalance(transferMessage.amount, op="dec")
+        balance.increment(transferMessage.amount)
+        print balance.value
 
     def initSnapshot(self, snapshotId):
-        for branchId in self.branchIds:
-            branchCtrl = Controller(branchId.ip, branchId.port)
-            branchCtrl.client.Marker(branchId, snapshotId, self.nextMessageId())
+        for branchId in branchIds:
+            branchCon = connection.Connection(branchId)
+            branchCon.client.Marker(branchId, snapshotId, self.nextMessageId())
 
     def Marker(self, branchId, snapshotId, messageId):
         print branchId, snapshotId, messageId
@@ -92,6 +110,8 @@ if __name__ == '__main__':
         host = socket.gethostname()
         host += '.cs.binghamton.edu' if host.startswith('remote') else ''
         print('Bank server running on ' + host + ':' + args.port)
+
+        branchId = BranchID(args.name, host, int(args.port))
         server.serve()
 
     except Thrift.TException as tx:
