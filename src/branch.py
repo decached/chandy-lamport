@@ -31,66 +31,108 @@ from thrift.transport import TSocket, TTransport
 from thrift.protocol import TBinaryProtocol
 from thrift.server import TServer
 
-branchId = None
-balance = None
+myBranchId = None
+myBalance = None
 branchIds = []
 branchCons = []
-messageId = 0
+myMessageId = 0
+
+states = {}
+bLock = threading.Lock()
+mLock = threading.Lock()
+
+transfers = {}
+
+
+class State:
+    def __init__(self, snapshotId, balance, startId, channels=[]):
+        self.snapshotId = snapshotId
+        self.balance = balance
+        self.channels = channels
 
 
 class Balance:
     def __init__(self, value):
         self.value = value
-        self.__lock = threading.Lock()
 
     def decrement(self, percent):
-        with self.__lock:
-            amount = 1
-            # amount = self.value * percent / 100
-            self.value -= amount
-            return amount
+        amount = self.value * percent / 100
+        self.value -= amount
+        return amount
 
     def increment(self, amount):
-        with self.__lock:
-            self.value += amount
+        self.value += amount
 
 
 def transactioner():
-    global branchId, branchCons
-
-    while True:
+    global myBalance, myBranchId, branchCons, myMessageId
+    for i in xrange(10):
         time.sleep(random.randint(1, 5))
-        amount = balance.decrement(random.randint(1, 5))
         randomBranchCon = branchCons[random.randint(0, len(branchCons) - 1)]
-        randomBranchCon.client.transferMoney(TransferMessage(branchId, amount), messageId)
+        with bLock:
+            amount = myBalance.decrement(percent=random.randint(1, 5))
+            randomBranchCon.client.transferMoney(TransferMessage(myBranchId, amount), myMessageId)
+            fifo(myBranchId.name, amount)
+
+
+def fifo(name, amount):
+    # FIXME: Implement FIFO
+    pass
 
 
 class BankHandler:
     def initBranch(self, initBalance, allBranches):
-        global balance, branchIds, branchCons
-        balance = Balance(initBalance)
-        branchIds = allBranches
-        branchCons = connection.getBranchCons(branchIds)
+        global myBalance, myBranchIds, branchCons, transfers
+        myBalance = Balance(initBalance)
+        myBranchIds = allBranches
+        branchCons = connection.getBranchCons(myBranchIds)
+        for branchId in allBranches:
+            transfers[branchId.name] = []
         threading.Thread(target=transactioner).start()
+        print myBranchId.name, '-> initBranch Successful'
 
     def transferMoney(self, transferMessage, messageId):
-        balance.increment(transferMessage.amount)
-        print balance.value
+        with bLock:
+            myBalance.increment(transferMessage.amount)
+            print myBalance.value
+        fifo(transferMessage.orig_branchId.name, transferMessage.amount)
 
     def initSnapshot(self, snapshotId):
-        for branchId in branchIds:
-            branchCon = connection.Connection(branchId)
-            branchCon.client.Marker(branchId, snapshotId, self.nextMessageId())
+        global myBalance, myMessageId
 
-    def Marker(self, branchId, snapshotId, messageId):
-        print branchId, snapshotId, messageId
+        with bLock and mLock:
+            state = State(snapshotId=snapshotId, balance=myBalance, startId=myMessageId)
+
+        for branchCon in branchCons:
+            with mLock:
+                myMessageId += 1
+                branchCon.client.Marker(myBranchId, snapshotId, myMessageId)
+
+        states[str(snapshotId)] = state
+
+    def Marker(self, incomingBranchId, incomingSnapshotId, incomingMessageId):
+        state = None
+        try:
+            state = states[str(incomingSnapshotId)]
+            # state.channels[(incomingBranchId.name, myBranchId.name)] = transfers[startMessageId:incomingMessageId]
+        except KeyError:
+            with bLock and mLock:
+                state = State(snapshotId=incomingSnapshotId, balance=myBalance, startId=myMessageId)
+                state.channels = []
+                # state.channels[(incomingBranchId.name, myBranchId.name)] = []
+
+        states[str(incomingSnapshotId)] = state
 
     def retrieveSnapshot(self, snapshotId):
-        pass
+        global transfers, myBranchIds
 
-    def nextMessageId(self):
-        self.messageId = self.messageId + 1
-        return self.messageId
+        state = states[str(snapshotId)]
+        snapshot = LocalSnapshot(state.snapshotId, state.balance.value, state.channels)
+
+        for branchId in myBranchIds:
+            transfers[branchId.name] = []
+
+        return snapshot
 
 
 if __name__ == '__main__':
@@ -111,7 +153,7 @@ if __name__ == '__main__':
         host += '.cs.binghamton.edu' if host.startswith('remote') else ''
         print('Bank server running on ' + host + ':' + args.port)
 
-        branchId = BranchID(args.name, host, int(args.port))
+        myBranchId = BranchID(args.name, host, int(args.port))
         server.serve()
 
     except Thrift.TException as tx:
