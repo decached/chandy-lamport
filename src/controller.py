@@ -19,7 +19,6 @@ import connection
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + '/lib/gen-py')
 sys.path.insert(0, glob.glob('/home/akash/clones/thrift/lib/py/build/lib.*')[0])
 
-from bank import Branch
 from bank.ttypes import (BranchID, TransferMessage, LocalSnapshot, SystemException)
 
 def readBranchIds(filename):
@@ -32,11 +31,20 @@ def readBranchIds(filename):
 
 
 def initBranches(balance, branchCons, branchIds):
-    for branchCon in branchCons:
+    perBranchBalance = balance / len(branchIds)
+
+    for branchCon in branchCons[:-1]:
         branchCon.client.initBranch(
-            balance,
+            perBranchBalance,
             [branchId for branchId in branchIds if branchId != branchCon.branchId]
         )
+
+    lastBranchCon = branchCons[-1]
+    lastBranchCon.client.initBranch(
+        balance - (perBranchBalance * (len(branchIds) - 1)),
+        [branchId for branchId in branchIds if branchId != lastBranchCon.branchId]
+    )
+
 
 
 if __name__ == '__main__':
