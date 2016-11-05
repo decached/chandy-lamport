@@ -40,7 +40,7 @@ states = {}
 bLock = threading.Lock()
 cLock = threading.Lock()
 mLock = threading.Lock()
-cond = threading.Condition(cLock)
+fifo = threading.Condition(cLock)
 
 channels = {}
 lastSentMsg = {}
@@ -55,6 +55,10 @@ class State:
 
 
 def transactioner():
+    """
+    Sends money from this branch to all other branches, by randomly selecting
+    one branch at a time. Infinitely loops in a Thread.
+    """
     global myBalance, myBranchId, branchCons, lastSentMsg
 
     while True:
@@ -68,6 +72,10 @@ def transactioner():
 
 
 def sendMarkers(snapshotId):
+    """
+    Sends Marker messages to all other branches. Will be invoked from
+    `initSnapshot` and `Marker`
+    """
     global myBranchId, branchCons, lastSentMsg
     with mLock:
         for branchCon in branchCons:
@@ -99,12 +107,14 @@ class BankHandler:
         """
         global myBalance, lastSeenMsg, channels
 
-        if incomingMsgId % 3 == 0 or incomingMsgId % 5 == 0:
-            time.sleep(2)
+        # To simulate a delayed message, uncomment the following lines. It will
+        # delay messageIds of multiple 3 or 5
+        # if incomingMsgId % 3 == 0 or incomingMsgId % 5 == 0:
+        #     time.sleep(3)
 
-        with cond:
+        with fifo:
             while lastSeenMsg[transferMessage.orig_branchId.name] < incomingMsgId - 1:
-                cond.wait()
+                fifo.wait()
 
             if channels[transferMessage.orig_branchId.name]["record"]:
                 channels[transferMessage.orig_branchId.name]["amounts"][str(incomingMsgId)] = transferMessage.amount
@@ -113,9 +123,14 @@ class BankHandler:
                 myBalance += transferMessage.amount
 
             lastSeenMsg[transferMessage.orig_branchId.name] = incomingMsgId
-            cond.notify_all()
+            fifo.notify_all()
 
     def initSnapshot(self, snapshotId):
+        """
+        Saves local state and sends out Marker messages. Starts recording on
+        all incoming channels.
+
+        """
         global myBalance, lastSentMsg, branchIds, channels
 
         with bLock:
@@ -130,18 +145,28 @@ class BankHandler:
                 channels[branchId.name]["record"] = True
                 channels[branchId.name]["amounts"] = {}
 
-        print 'IS', snapshotId
         sendMarkers(snapshotId)
 
     def Marker(self, incomingBranchId, snapshotId, incomingMsgId):
+        """
+        One receiving 1st Marker message, saves its local state and sends out
+        Marker messages to other branches. Sets currently incoming channel to
+        [] and starts recording on all other incoming channels.
+
+        One receiving non-1st Marker message(s), saves channels to state, and
+        stops recoding current incoming channel.
+
+        """
         global myBalance, lastSeenMsg, branchCons, channels
 
-        if incomingMsgId % 3 == 0 or incomingMsgId % 5 == 0:
-            time.sleep(2)
+        # To simulate a delayed message, uncomment the following lines. It will
+        # delay messageIds of multiple 3 or 5
+        # if incomingMsgId % 3 == 0 or incomingMsgId % 5 == 0:
+        #     time.sleep(3)
 
-        with cond:
+        with fifo:
             while lastSeenMsg[incomingBranchId.name] < incomingMsgId - 1:
-                cond.wait()
+                fifo.wait()
 
             state = None
             if str(snapshotId) in states:
@@ -164,14 +189,15 @@ class BankHandler:
 
                 threading.Thread(target=sendMarkers, args=(snapshotId,)).start()
 
-            print 'M', snapshotId
             lastSeenMsg[incomingBranchId.name] = incomingMsgId
-            cond.notify_all()
+            fifo.notify_all()
 
     def retrieveSnapshot(self, snapshotId):
+        """
+        Returns `LocalSnapshot` object.
+        """
         global branchIds
 
-        print 'R', snapshotId
         state = states[str(snapshotId)]
         msgs = []
         for channel, amounts in state.channels.iteritems():
