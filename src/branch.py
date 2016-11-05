@@ -37,10 +37,10 @@ branchIds = []
 branchCons = []
 
 states = {}
-cLock = threading.Lock()
 bLock = threading.Lock()
+cLock = threading.Lock()
 mLock = threading.Lock()
-cond = threading.Condition()
+cond = threading.Condition(cLock)
 
 channels = {}
 lastSentMsg = {}
@@ -58,107 +58,131 @@ def transactioner():
     global myBalance, myBranchId, branchCons, lastSentMsg
 
     while True:
-        time.sleep(random.randint(1, 1))
-        # time.sleep(random.randint(1, 5))
+        time.sleep(random.randint(1, 5))
         randomBranchCon = branchCons[random.randint(0, len(branchCons) - 1)]
         with bLock and mLock:
-            lastSentMsg[randomBranchCon.branchId.name] += 1
             amount = myBalance * random.randint(1, 5) / 100
             myBalance -= amount
+            lastSentMsg[randomBranchCon.branchId.name] += 1
             randomBranchCon.client.transferMoney(TransferMessage(myBranchId, amount), lastSentMsg[randomBranchCon.branchId.name])
+
+
+def sendMarkers(snapshotId):
+    global myBranchId, branchCons, lastSentMsg
+    with mLock:
+        for branchCon in branchCons:
+            lastSentMsg[branchCon.branchId.name] += 1
+            branchCon.client.Marker(myBranchId, snapshotId, lastSentMsg[branchCon.branchId.name])
 
 
 class BankHandler:
     def initBranch(self, initBalance, allBranches):
-        global myBalance, myBranchIds, branchCons, transfers, lastSeenMsg, lastSentMsg
+        """
+        Set initial balance and initiate thread for random money transfers
+        """
+        global myBalance, branchIds, branchCons, lastSeenMsg, lastSentMsg
 
         myBalance = initBalance
-        myBranchIds = allBranches
-        branchCons = connection.getBranchCons(myBranchIds)
+        branchIds = allBranches
+        branchCons = connection.getBranchCons(allBranches)
 
         for branchId in allBranches:
             lastSeenMsg[branchId.name] = 0
             lastSentMsg[branchId.name] = 0
-            channels[branchId.name] = {}
+            channels[branchId.name] = {"record": False, "amounts": {}}
 
         threading.Thread(target=transactioner).start()
 
     def transferMoney(self, transferMessage, incomingMsgId):
-        global myBalance, lastSeenMsg
+        """
+        To increment balance as this is the money received from other branches
+        """
+        global myBalance, lastSeenMsg, channels
 
-        channels[transferMessage.orig_branchId.name][incomingMsgId] = transferMessage.amount
-        if not (incomingMsgId % 3) or not (incomingMsgId % 5):
+        if incomingMsgId % 3 == 0 or incomingMsgId % 5 == 0:
             time.sleep(2)
 
         with cond:
             while lastSeenMsg[transferMessage.orig_branchId.name] < incomingMsgId - 1:
                 cond.wait()
 
+            if channels[transferMessage.orig_branchId.name]["record"]:
+                channels[transferMessage.orig_branchId.name]["amounts"][str(incomingMsgId)] = transferMessage.amount
+
             with bLock:
                 myBalance += transferMessage.amount
 
-            print 'Transfer', transferMessage.orig_branchId.name, transferMessage.amount
-            del channels[transferMessage.orig_branchId.name][incomingMsgId]
             lastSeenMsg[transferMessage.orig_branchId.name] = incomingMsgId
-
             cond.notify_all()
 
     def initSnapshot(self, snapshotId):
-        global myBalance, lastSentMsg
+        global myBalance, lastSentMsg, branchIds, channels
 
         with bLock:
-            state = State(snapshotId=snapshotId, balance=myBalance)
+            state = State(snapshotId, myBalance, {
+                branchId.name:[] for branchId in branchIds
+            })
+            states[str(snapshotId)] = state
 
-        for branchCon in branchCons:
-            with mLock:
-                lastSentMsg[branchCon.branchId.name] += 1
-                branchCon.client.Marker(myBranchId, snapshotId, lastSentMsg[branchCon.branchId.name])
+        with cLock:
+            # Start recording on all incoming channels
+            for branchId in branchIds:
+                channels[branchId.name]["record"] = True
+                channels[branchId.name]["amounts"] = {}
 
-        states[str(snapshotId)] = state
+        print 'IS', snapshotId
+        sendMarkers(snapshotId)
 
-    def Marker(self, incomingBranchId, incomingSnapshotId, incomingMsgId):
-        global lastSeenMsg, branchCons
-        if not (incomingMsgId % 3) or not (incomingMsgId % 5):
+    def Marker(self, incomingBranchId, snapshotId, incomingMsgId):
+        global myBalance, lastSeenMsg, branchCons, channels
+
+        if incomingMsgId % 3 == 0 or incomingMsgId % 5 == 0:
             time.sleep(2)
+
         with cond:
             while lastSeenMsg[incomingBranchId.name] < incomingMsgId - 1:
                 cond.wait()
 
-            lastSeenMsg[incomingBranchId.name] = incomingMsgId
-
             state = None
-            try:
-                state = states[str(incomingSnapshotId)]
-                state.channels[incomingBranchId.name] = channels[incomingBranchId.name].values()
-            except KeyError:
+            if str(snapshotId) in states:
+                state = states[str(snapshotId)]
+                state.channels[incomingBranchId.name] = [v for k, v in channels[incomingBranchId.name]["amounts"].iteritems()]
+                states[str(snapshotId)] = state
+                channels[incomingBranchId.name]["record"] = False
+            else:
                 with bLock:
-                    state = State(snapshotId=incomingSnapshotId, balance=myBalance)
+                    state = State(snapshotId, myBalance, {
+                        branchId.name:[] for branchId in branchIds
+                    })
+                    # Start recording on all incoming channels
+                    for branchId in branchIds:
+                        channels[branchId.name]["record"] = True
+                        channels[branchId.name]["amounts"] = {}
+                    # Mark current incoming channel `empty`
                     state.channels[incomingBranchId.name] = []
-                    for branchCon in branchCons:
-                        with mLock:
-                            lastSentMsg[branchCon.branchId.name] += 1
-                            branchCon.client.Marker(myBranchId, incomingSnapshotId, lastSentMsg[branchCon.branchId.name])
+                    states[str(snapshotId)] = state
 
-            print 'Marker', incomingBranchId.name
+                threading.Thread(target=sendMarkers, args=(snapshotId,)).start()
 
-            states[str(incomingSnapshotId)] = state
+            print 'M', snapshotId
+            lastSeenMsg[incomingBranchId.name] = incomingMsgId
             cond.notify_all()
 
     def retrieveSnapshot(self, snapshotId):
         global branchIds
 
+        print 'R', snapshotId
         state = states[str(snapshotId)]
-        snapshot = LocalSnapshot(state.snapshotId, state.balance)
+        msgs = []
+        for channel, amounts in state.channels.iteritems():
+            msgs.extend(amounts)
 
-        for branchId in branchIds:
-            print 'Snapshot:', branchId.name, state.channels[branchId.name]
-
-        return snapshot
+        return LocalSnapshot(snapshotId=state.snapshotId, balance=state.balance, messages=msgs)
 
 
 if __name__ == '__main__':
     try:
-        parser = argparse.ArgumentParser(description='Process some integers.')
+        parser = argparse.ArgumentParser(description='Global Snapshot of a Distributed Bank Application')
         parser.add_argument(dest='name', help='Name')
         parser.add_argument(dest='port', help='Port')
         args = parser.parse_args()
