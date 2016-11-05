@@ -56,14 +56,18 @@ if __name__ == '__main__':
     branchIds = readBranchIds(args.filename)
     branchCons = connection.getBranchCons(branchIds)
     initBranches(args.balance, branchCons, branchIds)
-    # snapshotId = 0
-    # while True:
-    #     time.sleep(3)
-    #     randomBranch = branchCons[random.randint(0, len(branchCons) - 1)]
-    #     snapshotId += 1
-    #     randomBranch.client.initSnapshot(snapshotId)
-    #     snapshots = []
-    #     time.sleep(3)
-    #     for branch in branchCons:
-    #         snapshot = branch.retrieveSnapshot(snapshotId)
-    #         snapshots.append(snapshot)
+    snapshotId = 0
+    while True:
+        snapshotId += 1
+        randomBranch = branchCons[random.randint(0, len(branchCons) - 1)]
+        time.sleep(5)
+        print 'Initiating snapshot'
+        randomBranch.client.initSnapshot(snapshotId)
+        snapshots = []
+        time.sleep(20)
+        s = 0
+        for branch in branchCons:
+            snapshot = branch.client.retrieveSnapshot(snapshotId)
+            s += (snapshot.balance + sum(snapshot.messages))
+            print snapshot.snapshotId, branch.branchId.name, snapshot.balance, snapshot.messages
+        print s
